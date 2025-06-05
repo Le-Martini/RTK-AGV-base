@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AGV Dashboard</title>
+    <link
+        rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css"
+    />
+    <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+    <link
+        rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"
+    />
+    <!-- Thêm roslibjs -->
+    <script src="https://cdn.jsdelivr.net/npm/roslib@1/build/roslib.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/nipplejs@0.9.0/dist/nipplejs.min.js"></script>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #f4f4f9;
+        }
+        #map {
+            height: 400px;
+            width: 90%;
+            margin: 20px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+        }
+        .buttons {
+            margin-bottom: 10px;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            background-color: #4CAF50;
+            color: white;
+            border: 2px solid #4caf32;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button.stop {
+            background-color: #f44336;
+            border: 2px solid #d32f2f;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        button.reset_heading {
+            background-color: beige;
+            color: black;
+        }
+        button:hover {
+            opacity: 0.8;
+        }
+        #joystick {
+            width: 150px;
+            height: 150px;
+            margin-top: 10px;
+        }
+        button.confirm {
+            background-color: #2196F3;
+            border: 2px solid #1976D2;
+        }
+        #waypoints-info {
+            margin: 10px;
+            padding: 10px;
+            background-color: #fff;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+<h1>AGV Dashboard</h1>
+
+<div id="map"></div>
+
+<div id="waypoints-info">
+    Waypoints đã được vẽ. Nhấn "Confirm Waypoints" để gửi tới AGV.
+</div>
+
+<div class="buttons">
+    <button onclick="sendStart()">Start</button>
+    <button class="stop" onclick="sendStop()">Stop</button>
+    <button class="reset_heading" onclick="sendReset()">Reset Heading</button>
+    <button class="confirm" onclick="confirmWaypoints()" id="confirm-btn" style="display: none;">Confirm Waypoints</button>
+</div>
+
+<div id="joystick"></div>
+
+<script>
+    // Khởi tạo kết nối ROS
+    var ros = new ROSLIB.Ros({
+        url: 'ws://agribot.local:9090'  // Thay đổi thành localhost
+    });
+
+    ros.on('connection', function() {
+        console.log('Connected to websocket server.');
+    });
+
+    ros.on('error', function(error) {
+        console.log('Error connecting to websocket server:', error);
+        // Thử kết nối lại sau 3 giây với địa chỉ IP cụ thể
+        setTimeout(function() {
+            ros = new ROSLIB.Ros({
+                url: 'ws://192.168.1.17:9090'  // Thử với IP cụ thể
+            });
+        }, 3000);
+    });
+
+    ros.on('close', function() {
+        console.log('Connection to websocket server closed.');
+        // Thử kết nối lại sau 3 giây
+        setTimeout(function() {
+            ros = new ROSLIB.Ros({
+                url: 'ws://lemartini.local:9090'
+            });
+        }, 3000);
+    });
+
+    // Khởi tạo các publishers
+    var startPub = new ROSLIB.Topic({
+        ros: ros,
+        name: '/start',
+        messageType: 'std_msgs/Bool'
+    });
+
+    var stopPub = new ROSLIB.Topic({
+        ros: ros,
+        name: '/stop',
+        messageType: 'std_msgs/Bool'
+    });
+
+    var resetPub = new ROSLIB.Topic({
+        ros: ros,
+        name: '/reset_heading',
+        messageType: 'std_msgs/Bool'
+    });
+
+    var waypointsPub = new ROSLIB.Topic({
+        ros: ros,
+        name: '/waypoints',
+        messageType: 'geometry_msgs/Vector3'
+    });
+
+    var cmdVelPub = new ROSLIB.Topic({
+        ros: ros,
+        name: '/cmd_vel',
+        messageType: 'geometry_msgs/Twist'
+    });
+
+    // Subscribe to localization
+    var locSub = new ROSLIB.Topic({
+        ros: ros,
+        name: '/agv_localization',
+        messageType: 'geometry_msgs/Vector3'
+    });
+
+    // Initialize Map
+    const map = L.map('map').setView([11.106992289104607, 106.61575349014424], 17);
+    L.tileLayer('https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: 19,
+    }).addTo(map);
+
+    let agvMarker = L.marker([0, 0]).addTo(map);
+    let breadcrumb = [];
+
+    function sendStart() {
+        var msg = new ROSLIB.Message({
+            data: true
+        });
+        startPub.publish(msg);
+        console.log("Sent command: start=true");
+    }
+
+    function sendStop() {
+        var msg = new ROSLIB.Message({
+            data: true
+        });
+        stopPub.publish(msg);
+        console.log("Sent command: stop=true");
+    }
+
+    function sendReset() {
+        var msg = new ROSLIB.Message({
+            data: true
+        });
+        resetPub.publish(msg);
+        console.log("Sent command: reset=true");
+    }
+
+    // Nhận update vị trí từ ROS
+    locSub.subscribe(function(message) {
+        const lat = message.x;
+        const lon = message.y;
+        const heading = message.z;
+
+        // Cập nhật vị trí marker
+        agvMarker.setLatLng([lat, lon]);
+        
+        // Thêm vào breadcrumb trail
+        breadcrumb.push([lat, lon]);
+        L.polyline(breadcrumb, { color: 'blue' }).addTo(map);
+
+        // Giữ map tập trung vào AGV
+        map.setView([lat, lon], map.getZoom());
+    });
+
+    // Add Draw Plugin for waypoints
+    const drawnItems = new L.FeatureGroup();
+    map.addLayer(drawnItems);
+
+    const drawControl = new L.Control.Draw({
+        edit: {
+            featureGroup: drawnItems
+        },
+        draw: {
+            polygon: true,
+            marker: true,
+            circle: false,
+            circlemarker: false,
+            rectangle: false,
+            polyline: true
+        }
+    });
+    map.addControl(drawControl);  // Sửa từ addLayer thành addControl
+
+    // Add temporary storage for waypoints
+    let tempWaypoints = [];
+    
+    function confirmWaypoints() {
+        if (tempWaypoints.length > 0) {
+            tempWaypoints.forEach(function(wp) {
+                var msg = new ROSLIB.Message({
+                    x: wp[0],
+                    y: wp[1],
+                    z: 0.0
+                });
+                waypointsPub.publish(msg);
+            });
+            console.log("Sent waypoints:", tempWaypoints);
+            
+            document.getElementById('confirm-btn').style.display = 'none';
+            document.getElementById('waypoints-info').style.display = 'none';
+        }
+    }
+
+    map.on('draw:created', function(event) {
+        const layer = event.layer;
+        drawnItems.addLayer(layer);
+
+        if (event.layerType === 'marker') {
+            const latlng = layer.getLatLng();
+            tempWaypoints = [[latlng.lat, latlng.lng]];
+        }
+
+        if (event.layerType === 'polyline') {
+            tempWaypoints = layer.getLatLngs().map(latlng => [latlng.lat, latlng.lng]);
+        }
+
+        if (event.layerType === 'polygon') {
+            tempWaypoints = layer.getLatLngs()[0].map(latlng => [latlng.lat, latlng.lng]);
+        }
+
+        document.getElementById('confirm-btn').style.display = 'inline-block';
+        document.getElementById('waypoints-info').style.display = 'block';
+    });
+
+    map.on('draw:deleted', function(event) {
+        tempWaypoints = [];
+        document.getElementById('confirm-btn').style.display = 'none';
+        document.getElementById('waypoints-info').style.display = 'none';
+    });
+
+    // Initialize Joystick
+    const joystickZone = document.getElementById('joystick');
+    const joystick = nipplejs.create({
+        zone: joystickZone,
+        mode: 'dynamic',
+        size: 100,
+        color: 'blue'
+    });
+
+    joystick.on('move', function(evt, data) {
+        if (data) {
+            const MAX_LINEAR = 1.0;  // m/s
+            const MAX_ANGULAR = 1.0;  // rad/s
+            
+            const linear_x = (data.distance / 50) * Math.cos(data.angle.radian);
+            const angular_z = (data.distance / 50) * Math.sin(data.angle.radian);
+
+            // Giới hạn tốc độ
+            const limited_linear = Math.max(-MAX_LINEAR, Math.min(MAX_LINEAR, linear_x));
+            const limited_angular = Math.max(-MAX_ANGULAR, Math.min(MAX_ANGULAR, angular_z));
+
+            var twist = new ROSLIB.Message({
+                linear: {
+                    x: limited_linear,
+                    y: 0.0,
+                    z: 0.0
+                },
+                angular: {
+                    x: 0.0,
+                    y: 0.0,
+                    z: limited_angular
+                }
+            });
+            cmdVelPub.publish(twist);
+        }
+    });
+
+    joystick.on('end', function() {
+        // Dừng AGV khi thả joystick
+        var twist = new ROSLIB.Message({
+            linear: {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0
+            },
+            angular: {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0
+            }
+        });
+        cmdVelPub.publish(twist);
+    });
+</script>
+
+</body>
+</html>
+
