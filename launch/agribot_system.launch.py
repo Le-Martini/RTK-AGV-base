@@ -53,11 +53,14 @@ def generate_launch_description():
         name='rosbridge_websocket',
         output='screen'
     )
+    launch_dir = os.path.dirname(__file__)
+    package_dir = os.path.dirname(launch_dir)
+    web_dir = os.path.join(package_dir, 'web')
 
     # Node để serve file HTML
     http_server = ExecuteProcess(
         cmd=['python3', '-m', 'http.server', '8000'],
-        cwd=os.path.dirname(html_path),
+        cwd=web_dir,
         output='screen'
     )
 
