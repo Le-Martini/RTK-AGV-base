@@ -48,11 +48,13 @@ def generate_launch_description():
 
     # Node rosbridge_server
     rosbridge_node = Node(
-        package='rosbridge_server',
-        executable='rosbridge_websocket',
-        name='rosbridge_websocket',
-        output='screen'
-    )
+    package='rosbridge_server',
+    executable='rosbridge_websocket',
+    name='rosbridge_websocket',
+    output='screen',
+    arguments=['--address', '0.0.0.0', '--port', '9090']
+    )   
+
     launch_dir = os.path.dirname(__file__)
     package_dir = os.path.dirname(launch_dir)
     web_dir = os.path.join(package_dir, 'web')
